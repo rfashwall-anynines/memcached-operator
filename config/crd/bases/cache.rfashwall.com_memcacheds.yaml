@@ -37,8 +37,11 @@ spec:
               size:
                 format: int32
                 type: integer
+              version:
+                type: string
             required:
             - size
+            - version
             type: object
           status:
             description: MemcachedStatus defines the observed state of Memcached

@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1" // added
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/blang/semver"
 	cachev1alpha1 "github.com/rfashwall-anynines/memcached-operator/api/v1alpha1"
 )
 
@@ -85,6 +88,7 @@ func (r *MemcachedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Error(err, "failed to get Deployment")
 		return ctrl.Result{}, err
 	}
+
 	size := memcached.Spec.Size
 	if *found.Spec.Replicas != size {
 		found.Spec.Replicas = &memcached.Spec.Size
@@ -120,6 +124,22 @@ func (r *MemcachedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	logger.Info("update memcached.Status", "memcached.Status.Nodes", memcached.Status.Nodes)
 
+	version := memcached.Spec.Version
+	if version != "" {
+		currentVersion := getVersionFromDeployment(found)
+		if isUpgradeNeeded(currentVersion, version) {
+			logger.Info("update memcached version", "Memcached.Namespace", memcached.Namespace, "Memcached.Name", memcached.Name, "version", version)
+			newImage := fmt.Sprintf("memcached:%s", version)
+			found.Spec.Template.Spec.Containers[0].Image = newImage
+			err = r.Update(ctx, found)
+			if err != nil {
+				logger.Error(err, "unable to update version")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -151,7 +171,7 @@ func (r *MemcachedReconciler) deploymentForMemcached(m *cachev1alpha1.Memcached)
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image:   "memcached:1.4.36-alpine",
+						Image:   "memcached:" + m.Spec.Version,
 						Name:    "memcached",
 						Command: []string{"memcached", "-m=64", "-o", "modern", "-v"},
 						Ports: []corev1.ContainerPort{{
@@ -178,4 +198,21 @@ func getPodNames(pods []corev1.Pod) []string {
 		podNames = append(podNames, pod.Name)
 	}
 	return podNames
+}
+
+func getVersionFromDeployment(dep *appsv1.Deployment) string {
+	image := dep.Spec.Template.Spec.Containers[0].Image
+	parts := strings.Split(image, ":")
+
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return ""
+}
+
+func isUpgradeNeeded(currentVersion, newVersion string) bool {
+	v1, _ := semver.Make(currentVersion)
+	v2, _ := semver.Make(newVersion)
+	isMinorVersionUpgrade := v1.Compare(v2) < 0
+	return currentVersion != newVersion && isMinorVersionUpgrade
 }
